@@ -721,6 +721,7 @@ def run_parse(args):
         else:
             tagged_sentences = [[(REVERSE_TOKEN_MAPPING.get(word.split('_')[0],word.split('_')[0]), REVERSE_TOKEN_MAPPING.get(word.split('_')[1],word.split('_')[1])) for word in sentence.split()] for sentence in subbatch_sentences]
         syntree, _, arc = parser.parse_batch(tagged_sentences) 
+        # print("arc",arc)
         arc_np = np.asarray(arc)
 
         syntree_pred.extend(syntree)
@@ -787,7 +788,7 @@ def run_parse_head(args):
         syntree, _, arc = parser.parse_batch(tagged_sentences)
         arc_np = np.asarray(arc)
 
-    # print(arc_np)
+    # print("arc_np", arc_np)
     return arc_np
 
 

@@ -25,6 +25,8 @@ from models.dualgcn import DualGCNClassifier
 from models.dualgcn_bert import DualGCNBertClassifier
 from data_utils import SentenceDataset, build_tokenizer, build_embedding_matrix, Tokenizer4BertGCN, ABSAGCNData
 from prepare_vocab import VocabHelp
+from tensorboardX import SummaryWriter
+writer = SummaryWriter('runs/tgcn_dualgcn')
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -171,12 +173,15 @@ class Instructor:
                 optimizer.zero_grad()
                 inputs = [sample_batched[col].to(self.opt.device) for col in self.opt.inputs_cols]
                 outputs, penal = self.model(inputs)
+                # print("outputs", outputs)
+                # print("penal", penal)
                 targets = sample_batched['polarity'].to(self.opt.device)
                 if self.opt.losstype is not None:
                     loss = criterion(outputs, targets) + penal
                 else:
                     loss = criterion(outputs, targets)
-
+                print(loss.item())
+                
                 loss.backward()
                 optimizer.step()
                 
@@ -196,8 +201,13 @@ class Instructor:
                     if f1 > max_f1:
                         max_f1 = f1
                     logger.info('loss: {:.4f}, acc: {:.4f}, test_acc: {:.4f}, f1: {:.4f}'.format(loss.item(), train_acc, test_acc, f1))
+                    writer.add_scalar("loss", loss.item(), global_step=global_step)
+                    writer.add_scalar("acc", train_acc, global_step=global_step)
+                    writer.add_scalar("test_acc", test_acc, global_step=global_step)
+                    writer.add_scalar("f1", f1, global_step=global_step)
+                    
         return max_test_acc, max_f1, model_path
-    
+
     def _evaluate(self, show_results=False):
         # switch model to evaluation mode
         self.model.eval()
@@ -288,7 +298,7 @@ def main():
         'syngcn': ['text', 'aspect', 'pos', 'head', 'deprel', 'post', 'mask', 'length', 'adj'],
         'semgcn': ['text', 'aspect', 'pos', 'head', 'deprel', 'post', 'mask', 'length'],
         'dualgcn': ['text', 'aspect', 'pos', 'head', 'deprel', 'post', 'mask', 'length', 'adj'],
-        'dualgcnbert': ['text_bert_indices', 'bert_segments_ids', 'attention_mask', 'asp_start', 'asp_end', 'adj_matrix', 'src_mask', 'aspect_mask']
+        'dualgcnbert': ['text_bert_indices', 'bert_segments_ids', 'attention_mask', 'asp_start', 'asp_end', 'adj_matrix', 'src_mask', 'aspect_mask', 'dep_adj_matrix', 'dep_adj_matrix']
     }
     
     initializers = {
@@ -374,7 +384,7 @@ def main():
 
     if not os.path.exists('./DualGCN/log'):
         os.makedirs('./DualGCN/log', mode=0o777)
-    log_file = '{}-{}-{}.log'.format(opt.model_name, opt.dataset, strftime("%Y-%m-%d_%H:%M:%S", localtime()))
+    log_file = '{}-{}-{}.log'.format(opt.model_name, opt.dataset, strftime("%Y-%m-%d_%H-%M-%S", localtime())) # windows下文件名不支持冒号
     logger.addHandler(logging.FileHandler("%s/%s" % ('./DualGCN/log', log_file)))
 
     ins = Instructor(opt)

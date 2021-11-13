@@ -1,0 +1,9 @@
+__pycache__/
+log/
+.vscode/
+DualGCN/dataset/Laptops_corenlp/
+LAL-Parser/
+DualGCN/glove/
+runs/
+*.ipynb
+*.pkl

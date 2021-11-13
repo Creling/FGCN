@@ -33,33 +33,41 @@ class DualGCNBertClassifier(nn.Module):
         self.opt = opt
         self.gcn_model = GCNAbsaModel(bert, opt=opt)
         self.classifier = nn.Linear(opt.bert_dim*2, opt.polarities_dim)
+        self.embed = nn.Embedding(40, 768, padding_idx=0)
 
     def forward(self, inputs):
-        outputs1, outputs2, adj_ag, adj_dep, pooled_output = self.gcn_model(inputs)
+        dep_emb = self.embed(inputs[-1])
+        outputs1, outputs2, adj_ag, adj_dep, pooled_output = self.gcn_model(inputs, dep_emb)
         final_outputs = torch.cat((outputs1, outputs2, pooled_output), dim=-1)
         logits = self.classifier(final_outputs)
 
         adj_ag_T = adj_ag.transpose(1, 2)
-        identity = torch.eye(adj_ag.size(1)).cuda()
+        # identity = torch.eye(adj_ag.size(1)).cuda()
+        identity = torch.eye(adj_ag.size(1))
         identity = identity.unsqueeze(0).expand(adj_ag.size(0), adj_ag.size(1), adj_ag.size(1))
         ortho = adj_ag@adj_ag_T
 
         for i in range(ortho.size(0)):
             ortho[i] -= torch.diag(torch.diag(ortho[i]))
-            ortho[i] += torch.eye(ortho[i].size(0)).cuda()
+            # ortho[i] += torch.eye(ortho[i].size(0)).cuda()
+            ortho[i] += torch.eye(ortho[i].size(0))
 
         penal = None
         if self.opt.losstype == 'doubleloss':
-            penal1 = (torch.norm(ortho - identity) / adj_ag.size(0)).cuda()
-            penal2 = (adj_ag.size(0) / torch.norm(adj_ag - adj_dep)).cuda()
+            # penal1 = (torch.norm(ortho - identity) / adj_ag.size(0)).cuda()
+            penal1 = (torch.norm(ortho - identity) / adj_ag.size(0))
+            # penal2 = (adj_ag.size(0) / torch.norm(adj_ag - adj_dep)).cuda()
+            penal2 = (adj_ag.size(0) / torch.norm(adj_ag - adj_dep))
             penal = self.opt.alpha * penal1 + self.opt.beta * penal2
         
         elif self.opt.losstype == 'orthogonalloss':
-            penal = (torch.norm(ortho - identity) / adj_ag.size(0)).cuda()
+            # penal = (torch.norm(ortho - identity) / adj_ag.size(0)).cuda()
+            penal = (torch.norm(ortho - identity) / adj_ag.size(0))
             penal = self.opt.alpha * penal
 
         elif self.opt.losstype == 'differentiatedloss':
-            penal = (adj_ag.size(0) / torch.norm(adj_ag - adj_dep)).cuda()
+            # penal = (adj_ag.size(0) / torch.norm(adj_ag - adj_dep)).cuda()
+            penal = (adj_ag.size(0) / torch.norm(adj_ag - adj_dep))
             penal = self.opt.beta * penal
         
         return logits, penal
@@ -71,9 +79,9 @@ class GCNAbsaModel(nn.Module):
         self.opt = opt
         self.gcn = GCNBert(bert, opt, opt.num_layers)
 
-    def forward(self, inputs):
-        text_bert_indices, bert_segments_ids, attention_mask, asp_start, asp_end, adj_dep, src_mask, aspect_mask = inputs
-        h1, h2, adj_ag, pooled_output = self.gcn(adj_dep, inputs)
+    def forward(self, inputs, dep_emb):
+        text_bert_indices, bert_segments_ids, attention_mask, asp_start, asp_end, adj_dep, src_mask, aspect_mask, dep_adj, dep_val = inputs
+        h1, h2, adj_ag, pooled_output = self.gcn(adj_dep, inputs, dep_emb)
         
         # avg pooling asp feature
         asp_wn = aspect_mask.sum(dim=1).unsqueeze(-1)
@@ -96,7 +104,9 @@ class GCNBert(nn.Module):
         self.pooled_drop = nn.Dropout(opt.bert_dropout)
         self.gcn_drop = nn.Dropout(opt.gcn_dropout)
         self.layernorm = LayerNorm(opt.bert_dim)
-
+        self.weight = nn.Parameter(torch.FloatTensor(768, 768))
+        self.linear = nn.Linear(768, 384)
+        
         # gcn layer
         self.W = nn.ModuleList()
         for layer in range(self.layers):
@@ -112,16 +122,15 @@ class GCNBert(nn.Module):
         self.affine1 = nn.Parameter(torch.Tensor(self.mem_dim, self.mem_dim))
         self.affine2 = nn.Parameter(torch.Tensor(self.mem_dim, self.mem_dim))
 
-    def forward(self, adj, inputs):
-        text_bert_indices, bert_segments_ids, attention_mask, asp_start, asp_end, adj_dep, src_mask, aspect_mask = inputs
+    def forward(self, adj, inputs, dep_emb):
+        text_bert_indices, bert_segments_ids, attention_mask, asp_start, asp_end, adj_dep, src_mask, aspect_mask, dep_adj, dep_val = inputs
         src_mask = src_mask.unsqueeze(-2)
         
         sequence_output, pooled_output = self.bert(text_bert_indices, attention_mask=attention_mask, token_type_ids=bert_segments_ids)
-        sequence_output = self.layernorm(sequence_output)
+        sequence_output = self.layernorm(sequence_output) # 对隐含层进行归一化
         gcn_inputs = self.bert_drop(sequence_output)
         pooled_output = self.pooled_drop(pooled_output)
-
-        denom_dep = adj.sum(2).unsqueeze(2) + 1
+        denom_dep = adj.sum(2).unsqueeze(2) + 1 # adj: [batch_size, adj]; 等价于 adj.sum(2， keep_dim=True) + 1
         attn_tensor = self.attn(gcn_inputs, gcn_inputs, src_mask)
         attn_adj_list = [attn_adj.squeeze(1) for attn_adj in torch.split(attn_tensor, 1, dim=1)]
         multi_head_list = []
@@ -134,23 +143,41 @@ class GCNBert(nn.Module):
                 adj_ag = attn_adj_list[i]
             else:
                 adj_ag += attn_adj_list[i]
-        adj_ag /= self.attention_heads
+        adj_ag = adj_ag / self.attention_heads
 
         for j in range(adj_ag.size(0)):
             adj_ag[j] -= torch.diag(torch.diag(adj_ag[j]))
-            adj_ag[j] += torch.eye(adj_ag[j].size(0)).cuda()
+            # adj_ag[j] += torch.eye(adj_ag[j].size(0)).cuda()
+            adj_ag[j] += torch.eye(adj_ag[j].size(0))
         adj_ag = src_mask.transpose(1, 2) * adj_ag
 
         denom_ag = adj_ag.sum(2).unsqueeze(2) + 1
         outputs_ag = gcn_inputs
-        outputs_dep = gcn_inputs
+        outputs_dep = gcn_inputs # torch.Size([16, 100, 768])
 
         for l in range(self.layers):
-            # ************SynGCN*************
-            Ax_dep = adj.bmm(outputs_dep)
-            AxW_dep = self.W[l](Ax_dep)
-            AxW_dep = AxW_dep / denom_dep
-            gAxW_dep = F.relu(AxW_dep)
+            # # ************SynGCN*************
+            # Ax_dep = adj.bmm(outputs_dep)
+            # AxW_dep = self.W[l](Ax_dep)
+            # AxW_dep = AxW_dep / denom_dep
+            # gAxW_dep = F.relu(AxW_dep)
+
+            # ***********TGCN***************
+            _, max_len, feat_len = outputs_dep.shape 
+            outputs_dep_extend = outputs_dep.unsqueeze(2)
+            adj_tgcn = adj.unsqueeze(-1)
+            if l == 0:
+                outputs_dep_extend = outputs_dep_extend.repeat(1, 1, max_len, 1)
+                adj_tgcn = adj_tgcn.repeat(1, 1, 1, feat_len)
+            else:
+                outputs_dep_extend = outputs_dep_extend.repeat(1, 1, max_len, 2)
+                adj_tgcn = adj_tgcn.repeat(1, 1, 1, feat_len * 2)
+            input_sum = outputs_dep_extend + dep_emb # dep_emb: torch.Size([16, 100, 100, 768])
+            hidden = torch.matmul(input_sum, self.weight)
+            output = hidden.transpose(1, 2) * adj_tgcn
+            output = torch.sum(output, dim=2)
+            gAxW_dep = self.linear(output)
+            gAxW_dep = F.relu(gAxW_dep)
 
             # ************SemGCN*************
             Ax_ag = adj_ag.bmm(outputs_ag)

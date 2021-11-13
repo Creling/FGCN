@@ -15,6 +15,7 @@ from tqdm import tqdm
 from transformers import BertTokenizer
 from torch.utils.data import Dataset
 
+deptype2id = {'acl:relcl': 1, 'cc': 2, 'expl': 3, 'root': 4, 'nsubjpass': 5, 'aux': 6, 'ccomp': 7, 'xcomp': 8, 'mark': 9, 'compound': 10, 'dep': 11, 'dobj': 12, 'mwe': 13, 'det': 14, 'nmod:tmod': 15, 'conj': 16, 'nsubj': 17, 'compound:prt': 18, 'auxpass': 19, 'det:predet': 20, 'nmod:poss': 21, 'nmod:npmod': 22, 'ROOT': 23, 'appos': 24, 'discourse': 25, 'advcl': 26, 'amod': 27, 'cop': 28, 'csubj': 29, 'nmod': 30, 'advmod': 31, 'nummod': 32, 'iobj': 33, 'neg': 34, 'cc:preconj': 35, 'parataxis': 36, 'case': 37, 'punct': 38, 'acl': 39}
 
 def ParseData(data_path):
     with open(data_path) as infile:
@@ -193,16 +194,20 @@ class SentenceDataset(Dataset):
             if opt.parseadj:
                 from absa_parser import headparser
                 # * adj
-                headp, syntree = headparser.parse_heads(obj['text'])
+                headp, syntree = headparser.parse_heads(obj['text']) # parse(n.n)得到了（n+1)*(n+1)的matrix，why? 按道理返回值该是arcs？
+                print(headp.shape)
                 adj = softmax(headp[0])
-                adj = np.delete(adj, 0, axis=0)
+                print("adj = softmax(headp[0])", adj.shape)
+                adj = np.delete(adj, 0, axis=0) # 删除了0轴上的第一个向量
+                print("adj = np.delete(adj, 0, axis=0)", adj.shape)
                 adj = np.delete(adj, 0, axis=1)
-                adj -= np.diag(np.diag(adj))
-                if not opt.direct:
+                print("adj = np.delete(adj, 0, axis=1)", adj.shape)
+                adj -= np.diag(np.diag(adj)) # 保持矩阵维度不变的情况下取出对角线元素，非对角线元素为0。（对一维向量进行diag就会有这个效果）
+                if not opt.direct: # 无向图
                     adj = adj + adj.T
-                adj = adj + np.eye(adj.shape[0])
-                adj = np.pad(adj, (0, opt.max_length - adj.shape[0]), 'constant')
-            
+                adj = adj + np.eye(adj.shape[0]) # 相当于 A + I eye生成边长为adj.shape[0]的单位矩阵
+                adj = np.pad(adj, (0, opt.max_length - adj.shape[0]), 'constant') # 扩展到最大长度
+                print(adj)
             if opt.parsehead:
                 from absa_parser import headparser
                 headp, syntree = headparser.parse_heads(obj['text'])
@@ -311,6 +316,16 @@ class ABSAGCNData(Dataset):
         self.data = []
         parse = ParseData
         polarity_dict = {'positive':0, 'negative':1, 'neutral':2}
+
+        if os.path.exists("headp.pkl"):
+            with open("headp.pkl", "rb") as f:
+                headp_dict = pickle.load(f)
+                use_headp_dict = True
+        else:
+            headp_dict = {}
+            use_headp_dict = False
+
+        dep_list = []
         for obj in tqdm(parse(fname), total=len(parse(fname)), desc="Training examples"):
             polarity = polarity_dict[obj['label']]
             text = obj['text']
@@ -318,10 +333,32 @@ class ABSAGCNData(Dataset):
             term_start = obj['aspect_post'][0]
             term_end = obj['aspect_post'][1]
             text_list = obj['text_list']
+            head = obj['head']
+            deprel = obj['deprel']
+            seq_length = obj["length"]
+            dep_adj_matrix = [[0] * seq_length for _ in range(seq_length)]
+            dep_val_matrix = [[0] * seq_length for _ in range(seq_length)]
+
+            for index, head_index in enumerate(head):
+                if head_index == 0:
+                    continue # 跳过 ROOT
+                dep_adj_matrix[index][head_index - 1] = 1
+                dep_adj_matrix[head_index - 1][index] = 1                
+                dep_val_matrix[index][head_index - 1] = deptype2id[deprel[index]]
+                dep_val_matrix[head_index - 1][index] = deptype2id[deprel[index]]
+            dep_adj_matrix = np.asarray(dep_adj_matrix)
+            dep_adj_matrix = np.pad(dep_adj_matrix, (1, tokenizer.max_seq_len - seq_length - 1), "constant") # 跳过cls
+            dep_val_matrix = np.asarray(dep_val_matrix)
+            dep_val_matrix = np.pad(dep_val_matrix, (1, tokenizer.max_seq_len - seq_length - 1), "constant") # 跳过cls
+   
             left, term, right = text_list[: term_start], text_list[term_start: term_end], text_list[term_end: ]
 
-            from absa_parser import headparser
-            headp, syntree = headparser.parse_heads(text)
+            if use_headp_dict:
+                headp = headp_dict[text]
+            else:
+                from absa_parser import headparser
+                headp, syntree = headparser.parse_heads(text) # lkl解析出的adj会比输入序列在长宽上各多1，因此需要取消掉。
+                headp_dict[text] = headp
             ori_adj = softmax(headp[0])
             ori_adj = np.delete(ori_adj, 0, axis=0)
             ori_adj = np.delete(ori_adj, 0, axis=1)
@@ -333,7 +370,7 @@ class ABSAGCNData(Dataset):
 
             left_tokens, term_tokens, right_tokens = [], [], []
             left_tok2ori_map, term_tok2ori_map, right_tok2ori_map = [], [], []
-
+            
             for ori_i, w in enumerate(left):
                 for t in tokenizer.tokenize(w):
                     left_tokens.append(t)                   # * ['expand', '##able', 'highly', 'like', '##ing']
@@ -367,7 +404,7 @@ class ABSAGCNData(Dataset):
                 (truncate_tok_len, truncate_tok_len), dtype='float32')
             for i in range(truncate_tok_len):
                 for j in range(truncate_tok_len):
-                    tok_adj[i][j] = ori_adj[tok2ori_map[i]][tok2ori_map[j]]
+                    tok_adj[i][j] = ori_adj[tok2ori_map[i]][tok2ori_map[j]] # 用lkl解析出的adj矩阵填充tok_adj
 
             context_asp_ids = [tokenizer.cls_token_id]+tokenizer.convert_tokens_to_ids(
                 bert_tokens)+[tokenizer.sep_token_id]+tokenizer.convert_tokens_to_ids(term_tokens)+[tokenizer.sep_token_id]
@@ -389,22 +426,29 @@ class ABSAGCNData(Dataset):
             context_asp_adj_matrix = np.ones(
                 (tokenizer.max_seq_len, tokenizer.max_seq_len)).astype('float32')
             pad_adj = np.ones(
-                (context_asp_len, context_asp_len)).astype('float32')
+                (context_asp_len, context_asp_len)).astype('float32') # 为什么不用全0矩阵padding？
             pad_adj[1:context_len + 1, 1:context_len + 1] = tok_adj
             context_asp_adj_matrix[:context_asp_len,
                                    :context_asp_len] = pad_adj
             data = {
-                'text_bert_indices': context_asp_ids,
-                'bert_segments_ids': context_asp_seg_ids,
-                'attention_mask': context_asp_attention_mask,
+                'text_bert_indices': context_asp_ids, # cls + text + sep + term + sep 全部转为token形式
+                'bert_segments_ids': context_asp_seg_ids, # cls + text +sep 为 0， term + sep 为 1
+                'attention_mask': context_asp_attention_mask, # cls + text + sep + term + sep 为 1，其余为0
                 'asp_start': asp_start,
                 'asp_end': asp_end,
-                'adj_matrix': context_asp_adj_matrix,
-                'src_mask': src_mask,
+                'adj_matrix': context_asp_adj_matrix, # max_seq_len * max_seq_len 的矩阵，有效部分是长宽为context_len的矩阵，其余部分为1
+                'src_mask': src_mask, # 只有left+term+right是1，其他为0
                 'aspect_mask': aspect_mask,
                 'polarity': polarity,
+                'dep_adj_matrix': dep_adj_matrix,
+                'dep_val_matrix': dep_val_matrix
             }
             self.data.append(data)
+
+        if not use_headp_dict:
+            with open("headp.pkl", "wb") as f:
+                pickle.dump(headp_dict, f)
+                print("headp saved")
 
     def __len__(self):
         return len(self.data)

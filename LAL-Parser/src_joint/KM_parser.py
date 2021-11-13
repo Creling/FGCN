@@ -1480,6 +1480,7 @@ class ChartParser(nn.Module):
                 subbatch_size += 1
 
     def parse_batch(self, sentences, golds=None):
+        # print("parse_batch")
         is_train = golds is not None
         self.train(is_train)
         torch.set_grad_enabled(is_train)
@@ -1495,7 +1496,7 @@ class ChartParser(nn.Module):
         word_idxs = np.zeros(packed_len, dtype=int)
         batch_idxs = np.zeros(packed_len, dtype=int)
         for snum, sentence in enumerate(sentences):
-            #print(sentence)
+            # print("sentence", sentence)
             for (tag, word) in [(START, START)] + sentence + [(STOP, STOP)]:
                 tag_idxs[i] = 0 if (not self.use_tags and self.f_tag is None) else self.tag_vocab.index_or_unk(tag, TAG_UNK)
                 if word not in (START, STOP):
@@ -1662,6 +1663,7 @@ class ChartParser(nn.Module):
 
         if self.xlnet is not None:
             #(XLNet/GPT pattern): A + [SEP] + B + [SEP] + [CLS]
+            # print("self.xlnet", sentences)
             all_input_ids = np.zeros((len(sentences), self.xlnet_max_len), dtype=int)
             all_input_mask = np.zeros((len(sentences), self.xlnet_max_len), dtype=int)
             all_word_start_mask = np.zeros((len(sentences), self.xlnet_max_len), dtype=int)
@@ -1804,6 +1806,7 @@ class ChartParser(nn.Module):
             trees = []
             scores = []
             arc = []
+            # print("fp_startpoints", fp_startpoints)
             for i, (start, end) in enumerate(zip(fp_startpoints, fp_endpoints)):
                 tree, score, arc_dc_np = self.parse_from_annotations(fencepost_annotations_start[start:end,:],
                                                                         fencepost_annotations_end[start:end,:], sentences[i], i)
@@ -1962,7 +1965,7 @@ class ChartParser(nn.Module):
         if contributions is not None:
             d_l = (self.label_vocab.size - 2)
             mb_size = (self.current_attns.shape[0] // d_l)
-            print('SENTENCE', sentence)
+            # print('SENTENCE', sentence)
 
         idx = -1
         def make_tree():
