@@ -14,6 +14,7 @@ import numpy as np
 from tqdm import tqdm
 from transformers import BertTokenizer
 from torch.utils.data import Dataset
+import re
 
 deptype2id = {'acl:relcl': 1, 'cc': 2, 'expl': 3, 'root': 4, 'nsubjpass': 5, 'aux': 6, 'ccomp': 7, 'xcomp': 8, 'mark': 9, 'compound': 10, 'dep': 11, 'dobj': 12, 'mwe': 13, 'det': 14, 'nmod:tmod': 15, 'conj': 16, 'nsubj': 17, 'compound:prt': 18, 'auxpass': 19, 'det:predet': 20, 'nmod:poss': 21, 'nmod:npmod': 22, 'ROOT': 23, 'appos': 24, 'discourse': 25, 'advcl': 26, 'amod': 27, 'cop': 28, 'csubj': 29, 'nmod': 30, 'advmod': 31, 'nummod': 32, 'iobj': 33, 'neg': 34, 'cc:preconj': 35, 'parataxis': 36, 'case': 37, 'punct': 38, 'acl': 39}
 
@@ -317,15 +318,19 @@ class ABSAGCNData(Dataset):
         parse = ParseData
         polarity_dict = {'positive':0, 'negative':1, 'neutral':2}
 
-        if os.path.exists("headp.pkl"):
-            with open("headp.pkl", "rb") as f:
-                headp_dict = pickle.load(f)
-                use_headp_dict = True
-        else:
-            headp_dict = {}
-            use_headp_dict = False
+        with open(f"headp.pkl", "rb") as f:
+            headp_dict = pickle.load(f)
+            use_headp_dict = True
 
-        dep_list = []
+        # data_type = re.findall(r"/([a-z]+)\.json", fname)[0]
+        # if os.path.exists(f"headp_{data_type}.pkl"):
+        #     with open(f"headp_{data_type}.pkl", "rb") as f:
+        #         headp_dict = pickle.load(f)
+        #         use_headp_dict = True
+        # else:
+        #     headp_dict = {}
+        #     use_headp_dict = False
+        
         for obj in tqdm(parse(fname), total=len(parse(fname)), desc="Training examples"):
             polarity = polarity_dict[obj['label']]
             text = obj['text']
@@ -445,10 +450,10 @@ class ABSAGCNData(Dataset):
             }
             self.data.append(data)
 
-        if not use_headp_dict:
-            with open("headp.pkl", "wb") as f:
-                pickle.dump(headp_dict, f)
-                print("headp saved")
+        # if not use_headp_dict:
+            # with open(f"headp_{data_type}.pkl", "wb") as f:
+            #     pickle.dump(headp_dict, f)
+            #     print(f"headp_{data_type} saved")
 
     def __len__(self):
         return len(self.data)
