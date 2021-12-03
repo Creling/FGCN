@@ -105,7 +105,7 @@ class GCNBert(nn.Module):
         self.gcn_drop = nn.Dropout(opt.gcn_dropout)
         self.layernorm = LayerNorm(opt.bert_dim)
         self.weight = nn.Parameter(torch.FloatTensor(768, 768))
-        self.linear = nn.Linear(768, 384)
+        self.sem_linear = nn.Linear(768, 384)
         
         # gcn layer
         self.W = nn.ModuleList()
@@ -114,10 +114,6 @@ class GCNBert(nn.Module):
             self.W.append(nn.Linear(input_dim, self.mem_dim))
 
         self.attn = MultiHeadAttention(opt.attention_heads, self.bert_dim)
-        self.weight_list = nn.ModuleList()
-        for j in range(self.layers):
-            input_dim = self.bert_dim if j == 0 else self.mem_dim
-            self.weight_list.append(nn.Linear(input_dim, self.mem_dim))
 
         self.affine1 = nn.Parameter(torch.Tensor(self.mem_dim, self.mem_dim))
         self.affine2 = nn.Parameter(torch.Tensor(self.mem_dim, self.mem_dim))
@@ -125,7 +121,7 @@ class GCNBert(nn.Module):
     def forward(self, adj, inputs, dep_emb):
         text_bert_indices, bert_segments_ids, attention_mask, asp_start, asp_end, adj_dep, src_mask, aspect_mask, dep_adj, dep_val = inputs
         src_mask = src_mask.unsqueeze(-2)
-        
+
         sequence_output, pooled_output = self.bert(text_bert_indices, attention_mask=attention_mask, token_type_ids=bert_segments_ids)
         sequence_output = self.layernorm(sequence_output) # 对隐含层进行归一化
         gcn_inputs = self.bert_drop(sequence_output)
@@ -156,34 +152,37 @@ class GCNBert(nn.Module):
         outputs_dep = gcn_inputs # torch.Size([16, 100, 768])
 
         for l in range(self.layers):
-            # # ************SynGCN*************
-            # Ax_dep = adj.bmm(outputs_dep)
-            # AxW_dep = self.W[l](Ax_dep)
-            # AxW_dep = AxW_dep / denom_dep
-            # gAxW_dep = F.relu(AxW_dep)
+            # ************SynGCN*************
+            Ax_dep = adj.bmm(outputs_dep)
+            AxW_dep = self.W[l](Ax_dep)
+            AxW_dep = AxW_dep / denom_dep
+            gAxW_dep = F.relu(AxW_dep) # torch.Size([16, 100, 384])
+            
 
             # ***********TGCN***************
-            _, max_len, feat_len = outputs_dep.shape 
-            outputs_dep_extend = outputs_dep.unsqueeze(2)
-            adj_tgcn = adj.unsqueeze(-1)
-            if l == 0:
-                outputs_dep_extend = outputs_dep_extend.repeat(1, 1, max_len, 1)
-                adj_tgcn = adj_tgcn.repeat(1, 1, 1, feat_len)
-            else:
-                outputs_dep_extend = outputs_dep_extend.repeat(1, 1, max_len, 2)
-                adj_tgcn = adj_tgcn.repeat(1, 1, 1, feat_len * 2)
-            input_sum = outputs_dep_extend + dep_emb # dep_emb: torch.Size([16, 100, 100, 768])
-            hidden = torch.matmul(input_sum, self.weight)
-            output = hidden.transpose(1, 2) * adj_tgcn
-            output = torch.sum(output, dim=2)
-            gAxW_dep = self.linear(output)
-            gAxW_dep = F.relu(gAxW_dep)
+            # _, max_len, feat_len = outputs_dep.shape 
+            # outputs_dep_extend = outputs_dep.unsqueeze(2)
+            # adj_tgcn = adj.unsqueeze(-1)
+            # if l == 0:
+            #     outputs_dep_extend = outputs_dep_extend.repeat(1, 1, max_len, 1)
+            #     adj_tgcn = adj_tgcn.repeat(1, 1, 1, feat_len)
+            # else:
+            #     outputs_dep_extend = outputs_dep_extend.repeat(1, 1, max_len, 2)
+            #     adj_tgcn = adj_tgcn.repeat(1, 1, 1, feat_len * 2)
+            # input_sum = outputs_dep_extend + dep_emb # dep_emb: torch.Size([16, 100, 100, 768])
+            # hidden = torch.matmul(input_sum, self.weight)
+            # output = hidden.transpose(1, 2) * adj_tgcn
+            # output = torch.sum(output, dim=2)
+            # gAxW_dep = self.linear(output)
+            # gAxW_dep = F.relu(gAxW_dep)
 
             # ************SemGCN*************
-            Ax_ag = adj_ag.bmm(outputs_ag)
-            AxW_ag = self.weight_list[l](Ax_ag)
-            AxW_ag = AxW_ag / denom_ag
-            gAxW_ag = F.relu(AxW_ag)
+            if l == 0:
+                gAxW_ag = self.sem_linear(outputs_ag)
+                gAxW_ag = F.relu(gAxW_ag)
+            else:
+                gAxW_ag = F.relu(outputs_ag)
+            
 
             # * mutual Biaffine module
             A1 = F.softmax(torch.bmm(torch.matmul(gAxW_dep, self.affine1), torch.transpose(gAxW_ag, 1, 2)), dim=-1)
