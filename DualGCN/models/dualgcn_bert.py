@@ -130,7 +130,7 @@ class GCNBert(nn.Module):
         sequence_output = self.layernorm(sequence_output) # 对隐含层进行归一化
         gcn_inputs = self.bert_drop(sequence_output)
         pooled_output = self.pooled_drop(pooled_output)
-        denom_dep = adj.sum(2).unsqueeze(2) + 1 # adj: [batch_size, adj]; 等价于 adj.sum(2， keep_dim=True) + 1
+        denom_dep = adj.sum(2).unsqueeze(2) + 1 # adj: [batch_size, seq_len, seq_len] -> [batch_size, seq_len, 1], 等价于 adj.sum(2， keep_dim=True) + 1
         attn_tensor = self.attn(gcn_inputs, gcn_inputs, src_mask)
         attn_adj_list = [attn_adj.squeeze(1) for attn_adj in torch.split(attn_tensor, 1, dim=1)]
         multi_head_list = []
@@ -157,31 +157,32 @@ class GCNBert(nn.Module):
 
         for l in range(self.layers):
             # # ************SynGCN*************
-            # Ax_dep = adj.bmm(outputs_dep)
-            # AxW_dep = self.W[l](Ax_dep)
-            # AxW_dep = AxW_dep / denom_dep
-            # gAxW_dep = F.relu(AxW_dep)
+            Ax_dep = adj.bmm(outputs_dep) # adj * input = torch.Size([16, 100, 768])
+            AxW_dep = self.W[l](Ax_dep) # torch.Size([16, 100, 384]) (l = 1时)
+            AxW_dep = AxW_dep / denom_dep # 看起来像是归一化
+            gAxW_dep = F.relu(AxW_dep)
 
             # ***********TGCN***************
-            _, max_len, feat_len = outputs_dep.shape 
-            outputs_dep_extend = outputs_dep.unsqueeze(2)
-            adj_tgcn = adj.unsqueeze(-1)
-            if l == 0:
-                outputs_dep_extend = outputs_dep_extend.repeat(1, 1, max_len, 1)
-                adj_tgcn = adj_tgcn.repeat(1, 1, 1, feat_len)
-            else:
-                outputs_dep_extend = outputs_dep_extend.repeat(1, 1, max_len, 2)
-                adj_tgcn = adj_tgcn.repeat(1, 1, 1, feat_len * 2)
-            input_sum = outputs_dep_extend + dep_emb # dep_emb: torch.Size([16, 100, 100, 768])
-            hidden = torch.matmul(input_sum, self.weight)
-            output = hidden.transpose(1, 2) * adj_tgcn
-            output = torch.sum(output, dim=2)
-            gAxW_dep = self.linear(output)
-            gAxW_dep = F.relu(gAxW_dep)
+            # _, max_len, feat_len = outputs_dep.shape 
+            # outputs_dep_extend = outputs_dep.unsqueeze(2)
+            # adj_tgcn = adj.unsqueeze(-1) # [16, 100, 100] -> [16, 100, 100, 1]
+            # if l == 0:
+            #     outputs_dep_extend = outputs_dep_extend.repeat(1, 1, max_len, 1)
+            #     adj_tgcn = adj_tgcn.repeat(1, 1, 1, feat_len)
+            # else:
+            #     outputs_dep_extend = outputs_dep_extend.repeat(1, 1, max_len, 2)
+            #     adj_tgcn = adj_tgcn.repeat(1, 1, 1, feat_len * 2) # [16, 100, 100, 1]
+            # input_sum = outputs_dep_extend + dep_emb # dep_emb: torch.Size([16, 100, 100, 768])
+            # hidden = torch.matmul(input_sum, self.weight)
+            # output = hidden.transpose(1, 2) * adj_tgcn
+            # output = torch.sum(output, dim=2)
+            # gAxW_dep = self.linear(output)
+            # gAxW_dep = F.relu(gAxW_dep)
 
             # ************SemGCN*************
             Ax_ag = adj_ag.bmm(outputs_ag)
             AxW_ag = self.weight_list[l](Ax_ag)
+            # AxW_ag = self.W[l](Ax_ag)
             AxW_ag = AxW_ag / denom_ag
             gAxW_ag = F.relu(AxW_ag)
 
