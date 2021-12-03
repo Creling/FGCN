@@ -25,6 +25,7 @@ from models.dualgcn import DualGCNClassifier
 from models.dualgcn_bert import DualGCNBertClassifier
 from data_utils import SentenceDataset, build_tokenizer, build_embedding_matrix, Tokenizer4BertGCN, ABSAGCNData
 from prepare_vocab import VocabHelp
+from torchinfo import summary
 from tensorboardX import SummaryWriter
 writer = SummaryWriter('runs/tgcn_dualgcn')
 
@@ -158,6 +159,7 @@ class Instructor:
 
     
     def _train(self, criterion, optimizer, max_test_acc_overall=0):
+        print(summary(self.model))
         max_test_acc = 0
         max_f1 = 0
         global_step = 0
